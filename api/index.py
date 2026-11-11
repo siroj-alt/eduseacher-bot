@@ -39,6 +39,7 @@ async def configure(webhook_url: str) -> str:
             [
                 BotCommand(command="start", description="Botni ishga tushirish"),
                 BotCommand(command="help", description="Yordam"),
+                BotCommand(command="share", description="Doʻstlarga ulashish"),
                 BotCommand(command="about", description="EduSearcher haqida"),
             ]
         )
