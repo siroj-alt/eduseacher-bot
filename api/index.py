@@ -9,9 +9,9 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aiogram import Bot  # noqa: E402
-from aiogram.types import BotCommand, Update  # noqa: E402
+from aiogram.types import BotCommand, MenuButtonWebApp, Update, WebAppInfo  # noqa: E402
 
-from bot_handlers import dp  # noqa: E402
+from bot_handlers import WEB_APP_URL, dp  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
@@ -41,6 +41,12 @@ async def configure(webhook_url: str) -> str:
                 BotCommand(command="help", description="Yordam"),
                 BotCommand(command="about", description="EduSearcher haqida"),
             ]
+        )
+        # Chat yonidagi menyu tugmasi ham Web App (edusearcher.uz) ni ochadi
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="EduSearcher", web_app=WebAppInfo(url=WEB_APP_URL)
+            )
         )
         info = await bot.get_webhook_info()
         return f"Webhook o'rnatildi: {info.url} (pending: {info.pending_update_count})"
