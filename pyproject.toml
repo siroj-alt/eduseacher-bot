@@ -1,0 +1,8 @@
+[project]
+name = "eduseacher-bot"
+version = "1.0.0"
+requires-python = ">=3.9"
+dependencies = ["aiogram==3.4.1"]
+
+[tool.vercel]
+entrypoint = "api.index:handler"

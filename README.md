@@ -13,5 +13,5 @@ Bir marta `https://<domen>/api/setup?key=<WEBHOOK_SECRET>` manzilini oching — 
 ## Lokal ishga tushirish
 ```
 pip install -r requirements.txt
-BOT_TOKEN=... python main.py
+BOT_TOKEN=... python polling.py
 ```
