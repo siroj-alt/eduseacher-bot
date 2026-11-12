@@ -242,6 +242,9 @@ def lead_status(status: str) -> str:
     return {
         "new": "🕓 Yuborildi",
         "contacted": "📞 Markaz bog'landi",
+        "accepted": "✅ Qabul qilindi",
+        "rejected": "❌ Rad etildi",
+        "cancelled": "🚫 Bekor qilingan",
         "done": "✅ Bajarildi",
     }.get(status, "🕓 Yuborildi")
 

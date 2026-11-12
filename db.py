@@ -167,11 +167,12 @@ class DB:
         return res if isinstance(res, list) else []
 
     async def submit_lead(self, tg: int, center_id: str, name: str, phone: str,
-                          course: Optional[str], note: Optional[str]) -> Any:
-        # Saytdagi ariza formasi bilan bir xil funksiya (admin panelida "leads" bo'limida ko'rinadi)
-        return await self.rpc("submit_lead", {
-            "p_center": center_id, "p_name": name, "p_phone": phone,
-            "p_course": course, "p_note": note, "p_visitor": f"tg:{tg}",
+                          course: Optional[str], note: Optional[str], tg_name: Optional[str] = None) -> Any:
+        # Saytdagi "O'qishga ariza" bilan bir xil jadvalga (applications) yoziladi:
+        # bosh admin paneli va markaz paneli "Arizalar" bo'limida (manba: Telegram bot) ko'rinadi.
+        return await self._srpc("bot_submit_application", {
+            "p_tg": tg, "p_center": center_id, "p_name": name, "p_phone": phone,
+            "p_course_name": course, "p_note": note,
         })
 
     async def submit_review(self, tg: int, center_id: str, name: str, stars: int, comment: Optional[str]) -> Any:
