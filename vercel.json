@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/index.py": {
-      "maxDuration": 30
+      "maxDuration": 60
     }
   },
   "rewrites": [
@@ -17,5 +17,8 @@
       "source": "/",
       "destination": "/api/index"
     }
+  ],
+  "regions": [
+    "hnd1"
   ]
 }
