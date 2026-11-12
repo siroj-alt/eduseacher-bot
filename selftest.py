@@ -77,17 +77,18 @@ async def run_selftest(db: DB) -> str:
             m["text"] = text
         return {"update_id": nxt(), "message": m}
 
-    def cbq(data: str) -> dict:
+    def cbq(data: str, old: bool = False) -> dict:
+        # date=0 — Telegram 48 soatdan eski xabarlarni shunday yuboradi (InaccessibleMessage)
         return {"update_id": nxt(), "callback_query": {
             "id": str(nxt()), "from": user, "chat_instance": "ci", "data": data,
-            "message": {"message_id": 99, "date": 0, "chat": chat, "text": "old",
+            "message": {"message_id": 99, "date": 0 if old else 1700000000, "chat": chat, "text": "old",
                         "from": {"id": 1, "is_bot": True, "first_name": "bot"}},
         }}
 
     async def step(label: str, payload: dict, expect_calls: bool = True):
         nonlocal failures
         calls.clear()
-        errors_before = len(bot_handlers.LAST_ERRORS)
+        errors_before = bot_handlers.ERROR_COUNT["n"]
         t0 = time.time()
         try:
             update = Update.model_validate(payload, context={"bot": bot})
@@ -96,7 +97,8 @@ async def run_selftest(db: DB) -> str:
             failures += 1
             lines.append(f"[FAIL] {label}: ISTISNO {exc!r}")
             return
-        new_errors = bot_handlers.LAST_ERRORS[errors_before:]
+        n_new = bot_handlers.ERROR_COUNT["n"] - errors_before
+        new_errors = bot_handlers.LAST_ERRORS[-n_new:] if n_new > 0 else []
         ms = int((time.time() - t0) * 1000)
         if new_errors or (expect_calls and not calls):
             failures += 1
@@ -115,6 +117,13 @@ async def run_selftest(db: DB) -> str:
         lines.append(f"[ OK ] namunaviy markaz: {found['items'][0]['name']} ({cid})")
     except DBError as exc:
         return f"[FAIL] baza qatlami: {exc}"
+
+    # ---- eski (kirish imkonsiz) xabardagi tugmalar ----
+    await step("cb cat:3 (eski xabar, InaccessibleMessage)", cbq("cat:3", old=True))
+    await step("cb c:<id> (eski xabar)", cbq(f"c:{cid}", old=True))
+    await step("cb fv:<id> (eski xabar)", cbq(f"fv:{cid}", old=True))
+    await step("cb fv:<id> (eski xabar, qaytarish)", cbq(f"fv:{cid}", old=True))
+    await step("cb rt:<id> (eski xabar)", cbq(f"rt:{cid}", old=True), expect_calls=False)
 
     # ---- boshlash ----
     await step("/start", msg("/start"))

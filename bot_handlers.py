@@ -33,6 +33,7 @@ STEP_TTL = 30 * 60  # bajarilmay qolgan qadam 30 daqiqadan keyin eskiradi
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 LAST_ERRORS: list = []  # selftest uchun
+ERROR_COUNT = {"n": 0}
 
 dp = Dispatcher()
 
@@ -101,31 +102,32 @@ async def save(db: DB, u: dict) -> None:
         log.exception("Seansni saqlab bo'lmadi")
 
 
-async def respond(event, text: str, markup=None, edit: bool = True) -> None:
-    """Callbackdan kelsa xabarni tahrirlaydi, aks holda yangi xabar yuboradi."""
+async def reply(event, text: str, markup=None) -> None:
+    """Yangi xabar yuboradi. Message ham, CallbackQuery ham (eski/kirish imkonsiz xabar bo'lsa ham) ishlaydi."""
     if isinstance(event, CallbackQuery):
-        msg = event.message
-        if msg is None:
-            return
-        if edit and (markup is None or isinstance(markup, InlineKeyboardMarkup)):
-            try:
-                await msg.edit_text(text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
-                return
-            except TelegramBadRequest as exc:
-                if "not modified" in str(exc):
-                    return
-        await msg.answer(text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
+        await event.bot.send_message(chat_id=event.from_user.id, text=text, reply_markup=markup,
+                                     parse_mode="HTML", disable_web_page_preview=True)
     else:
         await event.answer(text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
 
 
+async def respond(event, text: str, markup=None, edit: bool = True) -> None:
+    """Callbackdan kelsa xabarni tahrirlaydi (iloji bo'lmasa yangisini yuboradi), aks holda yangi xabar yuboradi."""
+    if (isinstance(event, CallbackQuery) and edit and isinstance(event.message, Message)
+            and (markup is None or isinstance(markup, InlineKeyboardMarkup))):
+        try:
+            await event.message.edit_text(text, reply_markup=markup, parse_mode="HTML",
+                                          disable_web_page_preview=True)
+            return
+        except TelegramBadRequest as exc:
+            if "not modified" in str(exc):
+                return
+    await reply(event, text, markup)
+
+
 async def send(event, text: str, markup=None) -> None:
     """Doim yangi xabar yuboradi."""
-    await respond(event, text, markup, edit=False)
-
-
-def target_message(event) -> Optional[Message]:
-    return event.message if isinstance(event, CallbackQuery) else event
+    await reply(event, text, markup)
 
 
 async def safe_send(bot: Bot, chat_id, text: str) -> None:
@@ -608,7 +610,7 @@ async def cb_favorite(cb: CallbackQuery, db: DB, u: dict):
         return
     await cb.answer("⭐ Saqlandi" if saved else "Saqlanganlardan olib tashlandi")
     card = await db.center_card(u["tg_id"], cid)
-    if card and cb.message:
+    if card and isinstance(cb.message, Message):
         try:
             await cb.message.edit_reply_markup(reply_markup=kb.card(card, bool(card.get("fav"))))
         except TelegramBadRequest:
@@ -622,8 +624,7 @@ async def cb_route(cb: CallbackQuery, db: DB, u: dict):
         await cb.answer()
         return
     card = await db.center_card(u["tg_id"], cid)
-    msg = cb.message
-    if not card or not msg:
+    if not card:
         await cb.answer("Markaz topilmadi", show_alert=True)
         return
     branches = [b for b in card.get("branches") or [] if b.get("lat") is not None and b.get("lng") is not None]
@@ -634,9 +635,10 @@ async def cb_route(cb: CallbackQuery, db: DB, u: dict):
     best = fmt.nearest_branch(card, u.get("lat"), u.get("lng"))
     chosen = [best] if best else branches[:3]
     for b in chosen:
-        await msg.answer_location(latitude=b["lat"], longitude=b["lng"])
-        await msg.answer(f"🧭 <b>{esc(card['name'])}</b>\n{esc(b.get('region') or '')} {esc(b.get('address') or '')}",
-                         parse_mode="HTML")
+        await cb.bot.send_location(chat_id=cb.from_user.id, latitude=b["lat"], longitude=b["lng"])
+        await cb.bot.send_message(
+            chat_id=cb.from_user.id, parse_mode="HTML",
+            text=f"🧭 <b>{esc(card['name'])}</b>\n{esc(b.get('region') or '')} {esc(b.get('address') or '')}")
     await db.track("route", cid, u["tg_id"])
 
 
@@ -712,11 +714,10 @@ async def lead_got_phone(message: Message, db: DB, u: dict, phone: str) -> None:
     lead["phone"] = phone
     set_step(u, "lead_note")
     await save(db, u)
-    await message.answer("✍️ Qo'shimcha izoh yozing (masalan, qulay vaqt) yoki o'tkazib yuboring:",
-                         reply_markup=kb.skip_cancel())
+    await reply(message, "✍️ Qo'shimcha izoh yozing (masalan, qulay vaqt) yoki o'tkazib yuboring:", kb.skip_cancel())
 
 
-async def lead_submit(message: Message, db: DB, u: dict, bot: Bot, note: Optional[str]) -> None:
+async def lead_submit(message, db: DB, u: dict, bot: Bot, note: Optional[str]) -> None:
     lead = sess(u).get("lead") or {}
     if not (lead.get("center") and lead.get("name") and lead.get("phone")):
         await go_home(message, u, db, "Ariza jarayoni eskirgan. Markazni qaytadan oching.")
@@ -728,7 +729,7 @@ async def lead_submit(message: Message, db: DB, u: dict, bot: Bot, note: Optiona
         center = lead.get("center")
         reset_flow(u)
         await save(db, u)
-        await message.answer(text, parse_mode="HTML", reply_markup=kb.main_menu())
+        await reply(message, text, kb.main_menu())
         if center:
             await show_card(message, db, u, center)
         return
@@ -758,8 +759,8 @@ async def lead_submit(message: Message, db: DB, u: dict, bot: Bot, note: Optiona
                         f"💬 {esc(note or '—')}\n🆔 tg:{u['tg_id']}")
     reset_flow(u)
     await save(db, u)
-    await message.answer(summary, parse_mode="HTML", reply_markup=kb.main_menu())
-    await message.answer("Davom etish:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await reply(message, summary, kb.main_menu())
+    await reply(message, "Davom etish:", InlineKeyboardMarkup(inline_keyboard=[
         [kb.ib("🏢 Markazga qaytish", f"c:{center_id}")]]))
 
 
@@ -791,7 +792,7 @@ async def cb_stars(cb: CallbackQuery, db: DB, u: dict):
     await respond(cb, f"{'⭐' * rv['stars']}\n\n✍️ Fikringizni yozing yoki o'tkazib yuboring:", kb.skip_cancel())
 
 
-async def review_submit(message: Message, db: DB, u: dict, comment: Optional[str]) -> None:
+async def review_submit(message, db: DB, u: dict, comment: Optional[str]) -> None:
     rv = sess(u).get("rv") or {}
     if not (rv.get("center") and rv.get("stars")):
         await go_home(message, u, db, "Sharh jarayoni eskirgan. Markazni qaytadan oching.")
@@ -804,13 +805,12 @@ async def review_submit(message: Message, db: DB, u: dict, comment: Optional[str
         text = f"⚠️ {esc(str(exc))}" if exc.user_visible else "⚠️ Sharh yuborilmadi. Birozdan keyin qayta urinib ko'ring."
         reset_flow(u)
         await save(db, u)
-        await message.answer(text, parse_mode="HTML", reply_markup=kb.main_menu())
+        await reply(message, text, kb.main_menu())
         return
     reset_flow(u)
     await save(db, u)
-    await message.answer("✅ Rahmat! Sharhingiz moderatsiyadan so'ng saytda va botda ko'rinadi.",
-                         reply_markup=kb.main_menu())
-    await message.answer("Davom etish:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await reply(message, "✅ Rahmat! Sharhingiz moderatsiyadan so'ng saytda va botda ko'rinadi.", kb.main_menu())
+    await reply(message, "Davom etish:", InlineKeyboardMarkup(inline_keyboard=[
         [kb.ib("🏢 Markazga qaytish", f"c:{center}")]]))
 
 
@@ -818,11 +818,10 @@ async def review_submit(message: Message, db: DB, u: dict, comment: Optional[str
 async def cb_skip(cb: CallbackQuery, db: DB, u: dict, bot: Bot):
     await cb.answer()
     step = current_step(u)
-    msg = cb.message
-    if step == "lead_note" and msg:
-        await lead_submit(msg, db, u, bot, None)
-    elif step == "rv_comment" and msg:
-        await review_submit(msg, db, u, None)
+    if step == "lead_note":
+        await lead_submit(cb, db, u, bot, None)
+    elif step == "rv_comment":
+        await review_submit(cb, db, u, None)
     else:
         await go_home(cb, u, db, "Bu qadam eskirgan. 🏠 Bosh menyu")
 
@@ -948,6 +947,7 @@ async def on_stale_callback(cb: CallbackQuery):
 @dp.error()
 async def on_error(event: ErrorEvent):
     log.error("Handlerda xatolik: %r", event.exception, exc_info=event.exception)
+    ERROR_COUNT["n"] += 1
     LAST_ERRORS.append(repr(event.exception))
     del LAST_ERRORS[:-20]
     try:
