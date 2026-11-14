@@ -77,6 +77,16 @@ async def selftest() -> str:
         info = await bot.get_webhook_info()
         tg = (f"[ OK ] Telegram: @{me.username}, webhook={info.url}, pending={info.pending_update_count}, "
               f"xato={info.last_error_message or '-'}")
+        try:
+            from bot_handlers import CHANNEL
+            chat = await bot.get_chat(CHANNEL)
+            mem = await bot.get_chat_member(CHANNEL, me.id)
+            if mem.status in ("administrator", "creator"):
+                tg += f"\n[ OK ] Kanal {CHANNEL} ({chat.title}): bot admin — majburiy obuna ISHLAYDI"
+            else:
+                tg += f"\n[WARN] Kanal {CHANNEL}: bot admin EMAS (status={mem.status}) — majburiy obuna ishlamaydi, botni kanalga ADMIN qiling"
+        except Exception as exc:  # noqa: BLE001
+            tg += f"\n[WARN] Kanal tekshiruvi: {type(exc).__name__}: {exc} — botni kanalga ADMIN qiling"
     except Exception as exc:  # noqa: BLE001
         tg = f"[FAIL] Telegram: {type(exc).__name__}"
     finally:

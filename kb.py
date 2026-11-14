@@ -41,6 +41,13 @@ def rows_of(buttons: list, per_row: int) -> list:
 
 
 # ---------- asosiy menyu ----------
+def subscribe(url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Kanalga o'tish", url=url)],
+        [ib("✅ Obunani tekshirish", "chk_sub")],
+    ])
+
+
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[

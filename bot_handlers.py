@@ -29,6 +29,13 @@ from kb import BOT_USERNAME, WEB_APP_URL
 log = logging.getLogger("bot")
 
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
+# Majburiy obuna: foydalanuvchi shu kanalga a'zo bo'lmaguncha bot ishlamaydi.
+# Bot kanalda ADMIN bo'lishi shart (aks holda a'zolikni tekshirib bo'lmaydi; u holda bot bloklamaydi).
+CHANNEL = os.getenv("CHANNEL_USERNAME", "@edusearcher").strip()
+CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/edusearcher").strip()
+REQUIRE_SUB = os.getenv("REQUIRE_SUBSCRIPTION", "1").strip() not in ("0", "false", "no", "")
+SUB_TTL = 60 * 60  # tasdiqlangan obuna 1 soat davomida qayta tekshirilmaydi
+MEMBER_OK = ("member", "administrator", "creator")
 STEP_TTL = 30 * 60  # bajarilmay qolgan qadam 30 daqiqadan keyin eskiradi
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
@@ -58,10 +65,104 @@ class CtxMiddleware(BaseMiddleware):
             except DBError:
                 log.exception("Foydalanuvchi kontekstini olib bo'lmadi")
         data["u"] = u
+        if db and user and not user.is_bot and REQUIRE_SUB:
+            if not await subscription_gate(event, data, db, u, user):
+                return None
         return await handler(event, data)
 
 
 dp.update.outer_middleware(CtxMiddleware())
+
+
+# =====================================================================
+# Majburiy obuna (kanal)
+# =====================================================================
+GATE_TEXT = (
+    "📢 <b>Botdan foydalanish uchun rasmiy kanalimizga obuna bo'ling</b>\n\n"
+    "Kanalda yangi o'quv markazlari, kurslar va foydali yangiliklar e'lon qilinadi.\n\n"
+    "1️⃣ «Kanalga o'tish» tugmasini bosib, obuna bo'ling\n"
+    "2️⃣ Keyin «✅ Obunani tekshirish» tugmasini bosing"
+)
+
+
+async def is_subscribed(bot: Bot, user_id: int) -> Optional[bool]:
+    """True/False — a'zolik; None — tekshirib bo'lmadi (bot kanalda admin emas yoki Telegram xatosi)."""
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Obunani tekshirib bo'lmadi: %r", exc)
+        return None
+    status = getattr(member, "status", None)
+    if status in MEMBER_OK:
+        return True
+    if status == "restricted":
+        return bool(getattr(member, "is_member", False))
+    return False
+
+
+async def subscription_gate(event: Update, data: dict, db: DB, u: dict, user) -> bool:
+    """True — foydalanuvchi o'tkazilsin; False — obuna so'raldi, handler chaqirilmaydi."""
+    msg, cb = event.message, event.callback_query
+    if not msg and not cb:
+        return True
+    if msg and msg.chat.type != "private":
+        return True
+    bot: Bot = data["bot"]
+    s = sess(u)
+    now = int(time.time())
+    is_check = bool(cb and cb.data == "chk_sub")
+
+    if not is_check and now - int(s.get("sub_ts") or 0) < SUB_TTL:
+        return True
+
+    ok = await is_subscribed(bot, user.id)
+    if ok is None:  # tekshirib bo'lmadi — foydalanuvchini bloklamaymiz
+        if is_check:
+            await cb.answer("Hozir tekshirib bo'lmadi, birozdan keyin urinib ko'ring.", show_alert=True)
+            return False
+        return True
+
+    if ok:
+        s["sub_ts"] = now
+        if not is_check:
+            s.pop("gated", None)
+            await save(db, u)
+            return True
+        # «Obunani tekshirish» bosildi va obuna tasdiqlandi — botni to'liq ishga tushiramiz
+        s.pop("gated", None)
+        pending = s.pop("pending_start", None) or ""
+        ref_by = s.pop("pending_ref", None)
+        name = user.first_name or "do'st"
+        await cb.answer("✅ Obuna tasdiqlandi!")
+        if isinstance(cb.message, Message):
+            try:
+                await cb.message.delete()
+            except Exception:  # noqa: BLE001
+                pass
+        reset_flow(u)
+        await save(db, u)
+        await send_welcome(bot, db, u, user.id, name, pending, ref_by)
+        return False
+
+    # a'zo emas
+    s["sub_ts"] = 0
+    if is_check:
+        await cb.answer("❌ Siz hali kanalga obuna bo'lmagansiz. Avval «Kanalga o'tish» tugmasini bosing.",
+                        show_alert=True)
+        return False
+    if msg and msg.text and msg.text.startswith("/start"):
+        parts = msg.text.split(maxsplit=1)
+        if len(parts) == 2:
+            s["pending_start"] = parts[1][:80]
+        if u.get("is_new") and u.get("referred_by"):
+            s["pending_ref"] = u["referred_by"]
+    s["gated"] = True
+    await save(db, u)
+    if cb:
+        await cb.answer("Avval kanalga obuna bo'ling.", show_alert=True)
+    await bot.send_message(chat_id=user.id, text=GATE_TEXT, parse_mode="HTML",
+                           reply_markup=kb.subscribe(CHANNEL_URL), disable_web_page_preview=True)
+    return False
 
 
 # =====================================================================
@@ -199,19 +300,21 @@ async def go_home(event, u: dict, db: DB, text: Optional[str] = None) -> None:
 # =====================================================================
 # Buyruqlar va menyu
 # =====================================================================
-@dp.message(CommandStart())
-async def cmd_start(message: Message, command: CommandObject, db: DB, u: dict, bot: Bot):
-    name = message.from_user.first_name if message.from_user else "do'st"
-    args = (command.args or "").strip()
-    reset_flow(u)
-    await save(db, u)
-
-    if u.get("is_new") and u.get("referred_by"):
-        await safe_send(bot, u["referred_by"], f"🎉 Sizning havolangiz orqali <b>{esc(name)}</b> botga qo'shildi!")
+async def send_welcome(bot: Bot, db: DB, u: dict, chat_id: int, name: str, args: str = "",
+                       referred_by: Optional[int] = None) -> None:
+    """/start javobi (to'g'ridan-to'g'ri yoki obuna tasdiqlangach)."""
+    if referred_by:
+        await safe_send(bot, referred_by, f"🎉 Sizning havolangiz orqali <b>{esc(name)}</b> botga qo'shildi!")
 
     if args.startswith("c_") and UUID_RE.match(args[2:]):
-        await message.answer("👋 Xush kelibsiz!", reply_markup=kb.main_menu())
-        await show_card(message, db, u, args[2:])
+        await bot.send_message(chat_id=chat_id, text="👋 Xush kelibsiz!", reply_markup=kb.main_menu())
+        card = await db.center_card(u["tg_id"], args[2:])
+        if card:
+            await bot.send_message(chat_id=chat_id, text=fmt.render_card(card, u.get("lat"), u.get("lng")),
+                                   parse_mode="HTML", disable_web_page_preview=True,
+                                   reply_markup=kb.card(card, bool(card.get("fav"))))
+        else:
+            await bot.send_message(chat_id=chat_id, text="Markaz topilmadi. U o'chirilgan bo'lishi mumkin.")
         return
 
     text = (
@@ -226,7 +329,17 @@ async def cmd_start(message: Message, command: CommandObject, db: DB, u: dict, b
     )
     if args.startswith("ref_"):
         text += "\n\n🤝 Sizni do'stingiz taklif qildi — xush kelibsiz!"
-    await message.answer(text, parse_mode="HTML", reply_markup=kb.main_menu())
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb.main_menu())
+
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message, command: CommandObject, db: DB, u: dict, bot: Bot):
+    name = message.from_user.first_name if message.from_user else "do'st"
+    args = (command.args or "").strip()
+    reset_flow(u)
+    await save(db, u)
+    referred = u["referred_by"] if u.get("is_new") and u.get("referred_by") else None
+    await send_welcome(bot, db, u, message.chat.id, name, args, referred)
 
 
 @dp.message(Command("menu"))

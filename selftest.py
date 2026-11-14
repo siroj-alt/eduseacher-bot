@@ -22,12 +22,19 @@ class DryRunSession(BaseSession):
     def __init__(self, calls: list):
         super().__init__()
         self.calls = calls
+        self.member_status = "member"  # GetChatMember javobi (obuna testlari uchun)
 
     async def close(self) -> None:
         return None
 
     async def make_request(self, bot, method, timeout=None):
         self.calls.append(method)
+        if type(method).__name__ == "GetChatMember":
+            from aiogram.types import ChatMemberLeft, ChatMemberMember
+            u = {"id": TEST_ID, "is_bot": False, "first_name": "Selftest"}
+            if self.member_status == "member":
+                return ChatMemberMember(status="member", user=u)
+            return ChatMemberLeft(status="left", user=u)
         if type(method).__name__ in ("SendMessage", "SendLocation"):
             return Message.model_validate({
                 "message_id": len(self.calls), "date": 0,
@@ -117,6 +124,39 @@ async def run_selftest(db: DB) -> str:
         lines.append(f"[ OK ] namunaviy markaz: {found['items'][0]['name']} ({cid})")
     except DBError as exc:
         return f"[FAIL] baza qatlami: {exc}"
+
+    # ---- majburiy obuna (kanal) ----
+    sub_calls_ok = True
+    session = bot.session
+    await db.ctx(TEST_ID, "Selftest", "selftest_user", None)
+    await db.set_session(TEST_ID, {})
+    session.member_status = "left"
+    await step("obuna: /start (a'zo emas -> kanal so'raladi)", msg("/start"))
+    gate = [c for c in calls if type(c).__name__ == "SendMessage"]
+    if not gate or "obuna" not in (gate[-1].text or "").lower() or not isinstance(gate[-1].reply_markup, InlineKeyboardMarkup):
+        failures += 1
+        lines.append("[FAIL] obuna: kanalga obuna taklifi chiqmadi")
+    await step("obuna: menyu bosilsa ham bloklanadi", msg(kb.BTN_FIND))
+    await step("obuna: tugma bosilsa bloklanadi", cbq("cat:3"))
+    await step("obuna: «tekshirish» (hali a'zo emas)", cbq("chk_sub"))
+    session.member_status = "member"
+    await step("obuna: «tekshirish» (a'zo bo'ldi -> bot ishga tushadi)", cbq("chk_sub"))
+    welcome = [c for c in calls if type(c).__name__ == "SendMessage"]
+    if not welcome or "xush kelibsiz" not in (welcome[-1].text or "").lower():
+        failures += 1
+        lines.append("[FAIL] obuna: tasdiqlangach xush kelibsiz xabari chiqmadi")
+    await step("obuna: tasdiqlangach bot ishlaydi", msg(kb.BTN_FIND))
+    # chuqur havola obunadan keyin ham saqlanadi
+    await db.set_session(TEST_ID, {})
+    session.member_status = "left"
+    await step("obuna: /start c_<id> (a'zo emas)", msg(f"/start c_{cid}"))
+    session.member_status = "member"
+    await step("obuna: tasdiqlangach markaz kartochkasi ochiladi", cbq("chk_sub"))
+    if not any(type(c).__name__ == "SendMessage" and "reply_markup" in dir(c) and isinstance(c.reply_markup, InlineKeyboardMarkup)
+               for c in calls):
+        failures += 1
+        lines.append("[FAIL] obuna: chuqur havola kartochkasi yuborilmadi")
+    await db.set_session(TEST_ID, {})
 
     # ---- eski (kirish imkonsiz) xabardagi tugmalar ----
     await step("cb cat:3 (eski xabar, InaccessibleMessage)", cbq("cat:3", old=True))
