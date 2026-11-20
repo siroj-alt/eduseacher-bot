@@ -176,10 +176,23 @@ class DB:
         })
 
     async def submit_review(self, tg: int, center_id: str, name: str, stars: int, comment: Optional[str]) -> Any:
-        return await self.rpc("submit_review", {
-            "p_center": center_id, "p_name": name, "p_stars": stars,
-            "p_comment": comment, "p_visitor": f"tg:{tg}",
+        # Saytda sharhni faqat kirgan foydalanuvchi qoldiradi; botda esa Telegram akkaunti shaxsni tasdiqlaydi
+        return await self._srpc("bot_submit_review", {
+            "p_tg": tg, "p_center": center_id, "p_name": name, "p_stars": stars, "p_comment": comment,
         })
+
+    # ---------- sayt kabineti bilan bog'lash, o'qishni tasdiqlash, bildirishnomalar ----------
+    async def link_account(self, tg: int, token: str) -> dict:
+        res = await self._srpc("bot_link_account", {"p_tg": tg, "p_token": token})
+        return res if isinstance(res, dict) else {"ok": False}
+
+    async def confirm_enrollment(self, tg: int, enrollment_id: int, ok: bool) -> dict:
+        res = await self._srpc("bot_confirm_enrollment", {"p_tg": tg, "p_id": enrollment_id, "p_ok": ok})
+        return res if isinstance(res, dict) else {"ok": False}
+
+    async def collect_notifications(self) -> list:
+        res = await self._srpc("bot_collect_notifications", {})
+        return res if isinstance(res, list) else []
 
     async def track(self, kind: str, center_id: Optional[str], tg: int) -> None:
         try:

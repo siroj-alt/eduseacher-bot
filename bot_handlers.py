@@ -107,6 +107,11 @@ async def subscription_gate(event: Update, data: dict, db: DB, u: dict, user) ->
         return True
     if msg and msg.chat.type != "private":
         return True
+    # Sayt kabinetini ulash va o'qishni tasdiqlash kanal obunasisiz ishlaydi
+    if msg and msg.text and msg.text.startswith("/start link_"):
+        return True
+    if cb and cb.data and cb.data.startswith("enc:"):
+        return True
     bot: Bot = data["bot"]
     s = sess(u)
     now = int(time.time())
@@ -332,10 +337,78 @@ async def send_welcome(bot: Bot, db: DB, u: dict, chat_id: int, name: str, args:
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb.main_menu())
 
 
+LINK_RE = re.compile(r"^link_([A-Za-z0-9_-]{16,80})$")
+ROLE_TEXT = {"center_owner": "markaz egasi", "admin": "administrator", "user": "foydalanuvchi"}
+
+
+async def link_account(message: Message, db: DB, token: str) -> None:
+    """Saytdagi kabinet (markaz yoki o'quvchi) shu Telegram akkauntiga ulanadi."""
+    try:
+        res = await db.link_account(message.from_user.id, token)
+    except DBError:
+        log.exception("Kabinetni ulab bo'lmadi")
+        await message.answer("⚠️ Hozir ulab bo'lmadi. Birozdan keyin saytdagi tugmani qayta bosing.")
+        return
+    if not res.get("ok"):
+        await message.answer("⚠️ Havola eskirgan yoki allaqachon ishlatilgan. Saytdagi kabinetingizda "
+                             "«Telegramni ulash» tugmasini qayta bosing.")
+        return
+    role = res.get("role") or "user"
+    who = esc(res.get("name") or "")
+    if role == "center_owner" or res.get("centers"):
+        centers = esc(res.get("centers") or "")
+        text = (f"✅ <b>Kabinet ulandi</b>{(' — ' + who) if who else ''}\n\n"
+                f"{('🏢 ' + centers + chr(10) + chr(10)) if centers else ''}"
+                "Endi shu chatga quyidagilar keladi:\n"
+                "• yangi so'rov va arizalar — darhol;\n"
+                "• 24 soatda javob berilmagan so'rov haqida eslatma;\n"
+                "• har dushanba — haftalik hisobot.\n\n"
+                "Uzish uchun: sayt → kabinet → «Bildirishnomalar».")
+    else:
+        text = (f"✅ <b>Kabinet ulandi</b>{(' — ' + who) if who else ''}\n\n"
+                "Ariza holati o'zgarsa va o'qishni boshlaganingizdan keyin shu yerga xabar keladi.")
+    await message.answer(text, parse_mode="HTML", reply_markup=kb.main_menu())
+
+
+@dp.callback_query(F.data.startswith("enc:"))
+async def cb_enrollment(cb: CallbackQuery, db: DB, u: dict):
+    parts = cb.data.split(":")
+    if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in ("0", "1"):
+        await cb.answer()
+        return
+    ok = parts[2] == "1"
+    try:
+        res = await db.confirm_enrollment(cb.from_user.id, int(parts[1]), ok)
+    except DBError:
+        await cb.answer("Hozir saqlab bo'lmadi, birozdan keyin qayta bosing.", show_alert=True)
+        return
+    if not res.get("ok"):
+        await cb.answer("Bu so'rov topilmadi.", show_alert=True)
+        return
+    await cb.answer("Rahmat, javobingiz saqlandi!")
+    center = esc(res.get("center") or "markaz")
+    text = (f"✅ Rahmat! <b>{center}</b>da o'qishni boshlaganingiz tasdiqlandi. Omad! 🎓\n\n"
+            "Markaz haqida fikringizni sharh sifatida qoldirsangiz, boshqalarga yordam berasiz."
+            if ok else
+            f"Tushunarli, <b>{center}</b>da o'qimayotganingizni qayd etdik. "
+            "Boshqa markaz kerak bo'lsa — «🔍 Markaz topish» tugmasini bosing.")
+    if isinstance(cb.message, Message):
+        try:
+            await cb.message.edit_text(text, parse_mode="HTML")
+            return
+        except TelegramBadRequest:
+            pass
+    await cb.bot.send_message(cb.from_user.id, text, parse_mode="HTML")
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, db: DB, u: dict, bot: Bot):
     name = message.from_user.first_name if message.from_user else "do'st"
     args = (command.args or "").strip()
+    m = LINK_RE.match(args)
+    if m:
+        await link_account(message, db, m.group(1))
+        return
     reset_flow(u)
     await save(db, u)
     referred = u["referred_by"] if u.get("is_new") and u.get("referred_by") else None

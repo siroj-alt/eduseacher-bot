@@ -1,5 +1,7 @@
 import asyncio
+import hmac
 import json
+import time
 import logging
 import os
 import sys
@@ -10,7 +12,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import aiohttp  # noqa: E402
 from aiogram import Bot  # noqa: E402
-from aiogram.types import BotCommand, MenuButtonWebApp, Update, WebAppInfo  # noqa: E402
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter  # noqa: E402
+from aiogram.types import (  # noqa: E402
+    BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, Update, WebAppInfo,
+)
 
 from bot_handlers import dp  # noqa: E402
 from db import DB  # noqa: E402
@@ -96,6 +101,55 @@ async def selftest() -> str:
     return f"{tg}\n{env}\n{report}"
 
 
+async def notify() -> str:
+    """Bazadagi navbatdagi bildirishnomalarni yuboradi (yangi so'rov, 24 soatlik eslatma,
+    haftalik hisobot, 14 kundan keyin o'quvchiga savol). Har soatda pg_cron chaqiradi."""
+    async with aiohttp.ClientSession() as http:
+        items = await DB(http).collect_notifications()
+    if not items:
+        return "sent=0"
+    bot = Bot(token=os.environ["BOT_TOKEN"])
+    sent = failed = 0
+    started = time.monotonic()
+    try:
+        for it in items:
+            if time.monotonic() - started > 50:
+                log.warning("Vaqt tugadi, %s ta xabar yuborilmay qoldi", len(items) - sent - failed)
+                break
+            chat_id, text = it.get("chat_id"), it.get("text")
+            if not chat_id or not text:
+                continue
+            markup = None
+            rows = it.get("buttons") or []
+            if rows:
+                markup = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text=b["text"], callback_data=b["data"]) for b in row if b.get("text") and b.get("data")]
+                    for row in rows
+                ])
+            for attempt in (1, 2):
+                try:
+                    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML",
+                                           reply_markup=markup, disable_web_page_preview=True)
+                    sent += 1
+                    break
+                except TelegramRetryAfter as exc:
+                    if attempt == 2:
+                        failed += 1
+                        break
+                    await asyncio.sleep(min(exc.retry_after, 10))
+                except TelegramForbiddenError:
+                    failed += 1  # foydalanuvchi botni bloklagan
+                    break
+                except Exception:  # noqa: BLE001
+                    log.exception("Bildirishnoma yuborilmadi (chat %s)", chat_id)
+                    failed += 1
+                    break
+            await asyncio.sleep(0.05)
+    finally:
+        await bot.session.close()
+    return f"sent={sent} failed={failed} total={len(items)}"
+
+
 class handler(BaseHTTPRequestHandler):
     def _reply(self, code: int, body: str = "ok") -> None:
         payload = body.encode()
@@ -106,7 +160,20 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
-        query = parse_qs(urlparse(self.path).query)
+        parsed = urlparse(self.path)
+        if parsed.path.rstrip("/") == "/api/notify" or self.headers.get("X-Notify-Key"):
+            secret = os.environ.get("BOT_API_SECRET", "")
+            given = self.headers.get("X-Notify-Key", "")
+            if not secret or not hmac.compare_digest(given, secret):
+                self._reply(403, "forbidden")
+                return
+            try:
+                self._reply(200, asyncio.run(notify()))
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Bildirishnomalar xatoligi")
+                self._reply(500, f"xatolik: {type(exc).__name__}")
+            return
+        query = parse_qs(parsed.query)
         key = query.get("key", [""])[0]
         if not key:
             self._reply(200, "EduSearcher bot webhook is running")
