@@ -144,7 +144,7 @@ async def run_selftest(db: DB) -> str:
     session.member_status = "member"
     await step("obuna: «tekshirish» (a'zo bo'ldi -> bot ishga tushadi)", cbq("chk_sub"))
     welcome = [c for c in calls if type(c).__name__ == "SendMessage"]
-    if not welcome or "xush kelibsiz" not in (welcome[-1].text or "").lower():
+    if not welcome or "edusearcher" not in (welcome[-1].text or "").lower():
         failures += 1
         lines.append("[FAIL] obuna: tasdiqlangach xush kelibsiz xabari chiqmadi")
     await step("obuna: tasdiqlangach bot ishlaydi", msg(kb.BTN_FIND))
