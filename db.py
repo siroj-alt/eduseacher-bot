@@ -135,16 +135,21 @@ class DB:
 
     # ---------- markazlar ----------
     async def list_centers(self, *, region=None, category=None, level=None, q=None,
-                           lat=None, lng=None, limit=6, offset=0) -> dict:
-        res = await self.rpc("bot_list_centers", {
+                           lat=None, lng=None, limit=6, offset=0, max_price=None, sort=None) -> dict:
+        res = await self.rpc("bot_list_centers_v2", {
             "p_region": region, "p_category": category, "p_level": level, "p_q": q,
             "p_lat": lat, "p_lng": lng, "p_limit": limit, "p_offset": offset,
+            "p_max_price": max_price, "p_sort": sort or "smart",
         })
         if not isinstance(res, dict):
             return {"total": 0, "items": []}
         res.setdefault("items", [])
         res["total"] = int(res.get("total") or 0)
         return res
+
+    async def compare(self, ids: list) -> list:
+        res = await self.rpc("bot_compare", {"p_ids": ids[:3]})
+        return res if isinstance(res, list) else []
 
     async def center_card(self, tg: int, center_id: str) -> Optional[dict]:
         res = await self._srpc("bot_center_card", {"p_tg": tg, "p_center": center_id})
@@ -191,8 +196,98 @@ class DB:
         return res if isinstance(res, dict) else {"ok": False}
 
     async def collect_notifications(self) -> list:
-        res = await self._srpc("bot_collect_notifications", {})
+        items: list = []
+        for fn in ("bot_collect_notifications", "bot_collect_more"):
+            try:
+                res = await self._srpc(fn, {})
+            except DBError:
+                log.exception("%s ishlamadi", fn)
+                continue
+            if isinstance(res, list):
+                items.extend(res)
+        return items
+
+    async def requeue(self, items: list) -> int:
+        if not items:
+            return 0
+        res = await self._srpc("bot_requeue", {"p_items": items})
+        return int(res or 0)
+
+    # ---------- kabinet holati ----------
+    async def me(self, tg: int) -> dict:
+        res = await self._srpc("bot_me", {"p_tg": tg})
+        return res if isinstance(res, dict) else {"linked": False}
+
+    async def unlink_account(self, tg: int) -> bool:
+        return bool(await self._srpc("bot_unlink", {"p_tg": tg}))
+
+    # ---------- sinov darsi ----------
+    async def trial_slots(self, center_id: str) -> list:
+        res = await self._srpc("bot_trial_slots", {"p_center": center_id})
         return res if isinstance(res, list) else []
+
+    async def book_trial(self, tg: int, center_id: str, name: str, phone: str, course: Optional[str],
+                         date: str, time_: str) -> Any:
+        return await self._srpc("bot_book_trial", {
+            "p_tg": tg, "p_center": center_id, "p_name": name, "p_phone": phone,
+            "p_course_name": course, "p_date": date, "p_time": time_,
+        })
+
+    # ---------- daraja testi ----------
+    async def save_test(self, tg: int, level: str, score: int, total: int) -> None:
+        try:
+            await self._srpc("bot_save_test", {"p_tg": tg, "p_level": level, "p_score": score, "p_total": total})
+        except DBError:
+            log.warning("Test natijasi saqlanmadi")
+
+    # ---------- ota-ona ----------
+    async def link_child(self, tg: int, code: str) -> dict:
+        res = await self._srpc("bot_link_child", {"p_tg": tg, "p_code": code})
+        return res if isinstance(res, dict) else {"ok": False}
+
+    async def children(self, tg: int) -> list:
+        res = await self._srpc("bot_children", {"p_tg": tg})
+        return res if isinstance(res, list) else []
+
+    async def unlink_child(self, tg: int, child_id: str) -> bool:
+        return bool(await self._srpc("bot_unlink_child", {"p_tg": tg, "p_child": child_id}))
+
+    async def my_study(self, tg: int) -> list:
+        res = await self._srpc("bot_my_study", {"p_tg": tg})
+        return res if isinstance(res, list) else []
+
+    # ---------- taklif ----------
+    async def referrals(self, tg: int) -> dict:
+        res = await self._srpc("bot_referrals", {"p_tg": tg})
+        return res if isinstance(res, dict) else {}
+
+    async def apply_ref(self, tg: int, code: str) -> dict:
+        res = await self._srpc("bot_apply_ref", {"p_tg": tg, "p_code": code})
+        return res if isinstance(res, dict) else {"ok": False}
+
+    # ---------- markaz egasi ----------
+    async def owner_apps(self, tg: int, mode: str = "new", limit: int = 8) -> dict:
+        res = await self._srpc("bot_owner_apps", {"p_tg": tg, "p_mode": mode, "p_limit": limit})
+        return res if isinstance(res, dict) else {"total_new": 0, "items": []}
+
+    async def owner_decide(self, tg: int, app_id: int, action: str) -> dict:
+        res = await self._srpc("bot_owner_decide", {"p_tg": tg, "p_app": app_id, "p_action": action})
+        return res if isinstance(res, dict) else {"ok": False}
+
+    async def owner_report(self, tg: int, days: int) -> dict:
+        res = await self._srpc("bot_owner_report", {"p_tg": tg, "p_days": days})
+        return res if isinstance(res, dict) else {"days": days, "items": []}
+
+    # ---------- kanal uchun kunlik post ----------
+    async def daily_digest(self) -> dict:
+        res = await self._srpc("bot_daily_digest", {})
+        return res if isinstance(res, dict) else {}
+
+    async def claim_daily(self, key: str) -> bool:
+        return bool(await self._srpc("bot_claim_daily", {"p_key": key}))
+
+    async def unclaim_daily(self, key: str) -> None:
+        await self._srpc("bot_unclaim_daily", {"p_key": key})
 
     async def track(self, kind: str, center_id: Optional[str], tg: int) -> None:
         try:

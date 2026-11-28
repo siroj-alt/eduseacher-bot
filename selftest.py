@@ -7,11 +7,13 @@ Ishga tushirish: GET /api/setup?key=<WEBHOOK_SECRET>&selftest=1
 """
 import time
 
-from aiogram import Bot
 from aiogram.client.session.base import BaseSession
 from aiogram.types import InlineKeyboardMarkup, Message, ReplyKeyboardMarkup, Update
 
+import app
 import bot_handlers
+import daily
+import i18n
 import kb
 from db import DB, DBError
 
@@ -66,7 +68,7 @@ def _describe(method) -> str:
 
 async def run_selftest(db: DB) -> str:
     calls: list = []
-    bot = Bot(token="123456:SELFTEST-token", session=DryRunSession(calls))
+    bot = app.make_bot("123456:SELFTEST-token", session=DryRunSession(calls))
     lines: list = []
     counter = {"n": 1000}
     failures = 0
@@ -99,7 +101,7 @@ async def run_selftest(db: DB) -> str:
         t0 = time.time()
         try:
             update = Update.model_validate(payload, context={"bot": bot})
-            await bot_handlers.dp.feed_update(bot, update, db=db)
+            await app.dp.feed_update(bot, update, db=db)
         except Exception as exc:  # noqa: BLE001
             failures += 1
             lines.append(f"[FAIL] {label}: ISTISNO {exc!r}")
@@ -236,6 +238,107 @@ async def run_selftest(db: DB) -> str:
     await step("tushunarsiz kontent (dice)", msg(dice={"emoji": "🎲", "value": 3}))
     await step("eskirgan callback", cbq("zzz:1"))
     await step("noto'g'ri markaz id (cb c:xxx)", cbq("c:not-a-uuid"), expect_calls=False)
+
+    # ================= YANGI IMKONIYATLAR =================
+    def inline_q(text: str) -> dict:
+        return {"update_id": nxt(), "inline_query": {"id": str(nxt()), "from": user, "query": text, "offset": "", "chat_type": "sender"}}
+
+    await db.set_session(TEST_ID, {})
+    # ---- til almashtirish
+    await step("/lang", msg("/lang"))
+    await step("cb lang:ru", cbq("lang:ru"))
+    await step("ru: menyu «Найти центр»", msg(i18n.S["btn_find"][1]))
+    await step("ru: cb cat:3", cbq("cat:3"))
+    await step("ru: cb lvl:3:x", cbq("lvl:3:x"))
+    await step("ru: cb fr:3:x:1", cbq("fr:3:x:1"))
+    await step("ru: cb c:<id>", cbq(f"c:{cid}"))
+    await step("ru: profil", msg(i18n.S["btn_profile"][1]))
+    await step("ru: /help", msg("/help"))
+    await step("cb lang:uz", cbq("lang:uz"))
+
+    # ---- qidiruv: narx, saralash, deep link
+    await step("matn: 'ingliz tili 1 mln gacha'", msg("ingliz tili 1 mln gacha"))
+    await step("cb prcm", cbq("prcm"))
+    await step("cb prc:500000", cbq("prc:500000"))
+    await step("cb srtm", cbq("srtm"))
+    await step("cb srt:cheap", cbq("srt:cheap"))
+    await step("cb srt:rating", cbq("srt:rating"))
+    await step("matn: 'arzon matematika'", msg("arzon matematika"))
+    await step("matn: 'reyting IELTS'", msg("reyting IELTS"))
+
+    # ---- taqqoslash
+    try:
+        two = await db.list_centers(category=1, limit=3)
+        ids = [x["id"] for x in two["items"]][:3]
+    except DBError:
+        ids = [cid]
+    for i, c in enumerate(ids):
+        await step(f"cb cmp:{i + 1}-markaz", cbq(f"cmp:{c}"))
+    await step("cb cmps (taqqoslash)", cbq("cmps"))
+    await step("cb cmpx (tozalash)", cbq("cmpx"))
+
+    # ---- sinov darsi (yuborilmaydi)
+    await step("cb tr:<id> (sinov darsi)", cbq(f"tr:{cid}"))
+    await step("cb trd:0", cbq("trd:0"))
+    await step("cb trb", cbq("trb"))
+    await step("cb trd:0 (qayta)", cbq("trd:0"))
+    await step("cb trt:0", cbq("trt:0"))
+    await step("cb trc:-1", cbq("trc:-1"))
+    await step("matn: sinov ismi", msg("Selftest Sinov"))
+    await step("matn: noto'g'ri telefon", msg("12"))
+    await step("cancel (sinov darsini to'xtatish)", msg("/cancel"))
+
+    # ---- daraja testi
+    await step("menyu: Daraja testi", msg(kb.BTN_TEST))
+    await step("cb lt:s", cbq("lt:s"))
+    for qi in range(15):
+        await step(f"cb lt:a:{qi}:0", cbq(f"lt:a:{qi}:0"))
+    await step("cb lt:c (mos markazlar)", cbq("lt:c"))
+    await step("cb lt:i (IELTS)", cbq("lt:i"))
+    await step("cb lt:s + lt:x", cbq("lt:s"))
+    await step("cb lt:x", cbq("lt:x"))
+
+    # ---- farzandim uchun
+    await step("menyu: Farzandim uchun", msg(kb.BTN_FAMILY))
+    await step("cb fam:add", cbq("fam:add"))
+    await step("matn: noto'g'ri kod", msg("12"))
+    await step("matn: mavjud bo'lmagan kod", msg("000000"))
+    await step("cancel (farzand)", msg("/cancel"))
+    await step("cb fam:list", cbq("fam:list"))
+
+    # ---- markaz egasi
+    await step("menyu: /owner", msg("/owner"))
+    await step("cb own:new", cbq("own:new"), expect_calls=False)
+    await step("cb own:all", cbq("own:all"), expect_calls=False)
+    await step("cb own:r:7", cbq("own:r:7"), expect_calls=False)
+    await step("cb apo:0:ok (begona ariza)", cbq("apo:0:ok"))
+
+    # ---- hisob, taklif
+    await step("cb acc:how", cbq("acc:how"))
+    await step("cb my:study", cbq("my:study"))
+    await step("cb acc:unlink", cbq("acc:unlink"))
+    await step("menyu: ulashish + takliflar", msg(kb.BTN_SHARE))
+    await step("cb ref:code", cbq("ref:code"))
+    await step("matn: noto'g'ri kod", msg("!!"))
+    await step("matn: mavjud bo'lmagan taklif kodi", msg("ZZZZ9999"))
+    await step("cancel (kod)", msg("/cancel"))
+
+    # ---- inline rejim
+    await step("inline: 'ingliz tili'", inline_q("ingliz tili"))
+    await step("inline: bo'sh so'rov", inline_q(""))
+    await step("inline: 'IELTS 1 mln gacha'", inline_q("IELTS 1 mln gacha"))
+
+    # ---- kanal posti (yubormaydi)
+    try:
+        post, markup = daily.build_post(await db.daily_digest(), daily.today())
+        if post and markup:
+            lines.append(f"[ OK ] kunlik post matni tayyor ({len(post)} belgi)")
+        else:
+            lines.append("[WARN] kunlik post: kun markazi topilmadi")
+    except Exception as exc:  # noqa: BLE001
+        failures += 1
+        lines.append(f"[FAIL] kunlik post: {exc!r}")
+    await step("yakuniy: /start", msg("/start"))
 
     summary = f"JAMI: {len([l for l in lines if l.startswith('[')])} tekshiruv, xatolar: {failures}"
     return summary + "\n" + "\n".join(lines)

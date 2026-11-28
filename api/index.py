@@ -17,7 +17,7 @@ from aiogram.types import (  # noqa: E402
     BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, Update, WebAppInfo,
 )
 
-from bot_handlers import dp  # noqa: E402
+from app import dp, make_bot  # noqa: E402
 from db import DB  # noqa: E402
 from kb import WEB_APP_URL  # noqa: E402
 
@@ -33,13 +33,17 @@ COMMANDS = [
     BotCommand(command="applications", description="Arizalarim"),
     BotCommand(command="share", description="Do'stlarga ulashish"),
     BotCommand(command="profile", description="Profil"),
+    BotCommand(command="test", description="Ingliz tili daraja testi"),
+    BotCommand(command="family", description="Farzandim uchun"),
+    BotCommand(command="owner", description="Markaz egasi paneli"),
+    BotCommand(command="lang", description="Til / Язык"),
     BotCommand(command="help", description="Yordam"),
     BotCommand(command="cancel", description="Jarayonni bekor qilish"),
 ]
 
 
 async def process_update(data: dict) -> None:
-    bot = Bot(token=os.environ["BOT_TOKEN"])
+    bot = make_bot(os.environ["BOT_TOKEN"])
     try:
         async with aiohttp.ClientSession() as http:
             update = Update.model_validate(data, context={"bot": bot})
@@ -49,14 +53,14 @@ async def process_update(data: dict) -> None:
 
 
 async def configure(webhook_url: str) -> str:
-    bot = Bot(token=os.environ["BOT_TOKEN"])
+    bot = make_bot(os.environ["BOT_TOKEN"])
     try:
         me = await bot.get_me()
         await bot.set_webhook(
             url=webhook_url,
             secret_token=os.environ.get("WEBHOOK_SECRET") or None,
             drop_pending_updates=True,
-            allowed_updates=["message", "callback_query"],
+            allowed_updates=["message", "callback_query", "inline_query"],
         )
         await bot.set_my_commands(COMMANDS)
         # Chat yonidagi menyu tugmasi ham Web App (edusearcher.uz) ni ochadi
@@ -76,7 +80,7 @@ async def selftest() -> str:
     async with aiohttp.ClientSession() as http:
         report = await run_selftest(DB(http))
     # Haqiqiy Telegram tokenini ham tekshiramiz (xabar yubormaydi)
-    bot = Bot(token=os.environ["BOT_TOKEN"])
+    bot = make_bot(os.environ["BOT_TOKEN"])
     try:
         me = await bot.get_me()
         info = await bot.get_webhook_info()
@@ -108,24 +112,34 @@ async def notify() -> str:
         items = await DB(http).collect_notifications()
     if not items:
         return "sent=0"
-    bot = Bot(token=os.environ["BOT_TOKEN"])
+    bot = make_bot(os.environ["BOT_TOKEN"])
     sent = failed = 0
     started = time.monotonic()
+    unsent: list = []
     try:
-        for it in items:
-            if time.monotonic() - started > 50:
-                log.warning("Vaqt tugadi, %s ta xabar yuborilmay qoldi", len(items) - sent - failed)
+        for idx, it in enumerate(items):
+            if time.monotonic() - started > 45:
+                unsent = items[idx:]
+                log.warning("Vaqt tugadi, %s ta xabar keyingi safarga qoldirildi", len(unsent))
                 break
             chat_id, text = it.get("chat_id"), it.get("text")
             if not chat_id or not text:
                 continue
             markup = None
-            rows = it.get("buttons") or []
+            rows = []
+            for row in it.get("buttons") or []:
+                btns = []
+                for b in row:
+                    if not b.get("text"):
+                        continue
+                    if b.get("url"):
+                        btns.append(InlineKeyboardButton(text=b["text"], url=b["url"]))
+                    elif b.get("data"):
+                        btns.append(InlineKeyboardButton(text=b["text"], callback_data=b["data"]))
+                if btns:
+                    rows.append(btns)
             if rows:
-                markup = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text=b["text"], callback_data=b["data"]) for b in row if b.get("text") and b.get("data")]
-                    for row in rows
-                ])
+                markup = InlineKeyboardMarkup(inline_keyboard=rows)
             for attempt in (1, 2):
                 try:
                     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML",
@@ -147,7 +161,25 @@ async def notify() -> str:
             await asyncio.sleep(0.05)
     finally:
         await bot.session.close()
-    return f"sent={sent} failed={failed} total={len(items)}"
+    if unsent:
+        try:
+            async with aiohttp.ClientSession() as http:
+                await DB(http).requeue(unsent)
+        except Exception:  # noqa: BLE001
+            log.exception("Yuborilmay qolgan xabarlarni qayta navbatga qo'yib bo'lmadi")
+    return f"sent={sent} failed={failed} total={len(items)} requeued={len(unsent)}"
+
+
+async def daily(dry: bool = False) -> str:
+    """Kanalga kunlik post (pg_cron har kuni 09:00 Toshkent vaqti)."""
+    from daily import run_daily
+
+    bot = make_bot(os.environ["BOT_TOKEN"])
+    try:
+        async with aiohttp.ClientSession() as http:
+            return await run_daily(bot, DB(http), dry=dry)
+    finally:
+        await bot.session.close()
 
 
 class handler(BaseHTTPRequestHandler):
@@ -161,14 +193,18 @@ class handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path.rstrip("/") == "/api/notify" or self.headers.get("X-Notify-Key"):
+        path = parsed.path.rstrip("/")
+        if path in ("/api/notify", "/api/daily") or self.headers.get("X-Notify-Key"):
             secret = os.environ.get("BOT_API_SECRET", "")
             given = self.headers.get("X-Notify-Key", "")
             if not secret or not hmac.compare_digest(given, secret):
                 self._reply(403, "forbidden")
                 return
             try:
-                self._reply(200, asyncio.run(notify()))
+                if path == "/api/daily":
+                    self._reply(200, asyncio.run(daily()))
+                else:
+                    self._reply(200, asyncio.run(notify()))
             except Exception as exc:  # noqa: BLE001
                 log.exception("Bildirishnomalar xatoligi")
                 self._reply(500, f"xatolik: {type(exc).__name__}")
@@ -183,6 +219,9 @@ class handler(BaseHTTPRequestHandler):
             self._reply(403, "forbidden")
             return
         try:
+            if query.get("daily", [""])[0] == "dry":
+                self._reply(200, asyncio.run(daily(dry=True)))
+                return
             if query.get("selftest", [""])[0] == "1":
                 self._reply(200, asyncio.run(selftest()))
                 return

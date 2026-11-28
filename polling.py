@@ -10,14 +10,14 @@ import os
 import aiohttp
 from aiogram import Bot
 
-from bot_handlers import dp
+from app import dp, make_bot
 from db import DB
 
 
 async def main():
     logging.basicConfig(level=logging.INFO)
     token = os.environ["BOT_TOKEN"]
-    bot = Bot(token=token)
+    bot = make_bot(token)
     # Webhook o'rnatilgan bo'lsa, polling ishlashi uchun uni o'chirib qo'yamiz
     await bot.delete_webhook(drop_pending_updates=True)
     print("Bot ishga tushdi (polling)...")
